@@ -68,10 +68,12 @@ docker run --detach \
     --log-opt max-file=3 \
     "$IMAGE"
 
-# Give it a moment, then make sure it didn't exit straight away.
-sleep 10
-if [[ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER")" != "true" ]]; then
-    echo "The bot stopped right after starting. Its last log lines:" >&2
+# Give it a moment, then make sure it didn't exit straight away. A crashing
+# bot gets restarted by Docker, so a restart count above zero also means trouble.
+sleep 15
+state="$(docker inspect --format '{{.State.Running}} {{.RestartCount}}' "$CONTAINER")"
+if [[ "$state" != "true 0" ]]; then
+    echo "The bot keeps stopping after it starts. Its last log lines:" >&2
     docker logs --tail 50 "$CONTAINER" >&2
     exit 1
 fi

@@ -60,7 +60,16 @@ class ReceiptBot(discord.Client):
         # global registration can take up to an hour.
         guild = discord.Object(id=self.settings.discord.guild_id)
         self.tree.copy_global_to(guild=guild)
-        await self.tree.sync(guild=guild)
+        try:
+            await self.tree.sync(guild=guild)
+        except discord.Forbidden:
+            logger.error(
+                "Discord refused to add the slash commands to server %s. Invite the bot "
+                "to that server with both the 'bot' and 'applications.commands' scopes, "
+                "and check that discord.guild_id in the config is that server's ID.",
+                guild.id,
+            )
+            raise
         self.reminder_loop.start()
 
     async def close(self) -> None:
