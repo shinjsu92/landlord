@@ -21,6 +21,7 @@ from rent_receipt.money import InvalidAmountError, parse_amount
 
 DISCORD_TOKEN_ENV = "DISCORD_BOT_TOKEN"
 SMTP_PASSWORD_ENV = "SMTP_PASSWORD"
+GMAIL_SMTP_HOST = "smtp.gmail.com"
 
 PAYMENT_METHODS: tuple[str, ...] = (
     "Cash",
@@ -115,6 +116,13 @@ def load_settings(config_path: Path, env: Mapping[str, str] | None = None) -> Se
     if not isinstance(reminders, dict):
         raise ConfigError("[reminders] must be a section.")
 
+    smtp_host = _str(smtp, "host", "smtp")
+    smtp_password = _secret(env, SMTP_PASSWORD_ENV)
+    if smtp_host == GMAIL_SMTP_HOST:
+        # Google shows app passwords in groups of four ("abcd efgh ijkl mnop");
+        # the spaces aren't part of the password.
+        smtp_password = smtp_password.replace(" ", "")
+
     timezone_name = _str(raw, "timezone", "top level")
     try:
         timezone = ZoneInfo(timezone_name)
@@ -129,10 +137,10 @@ def load_settings(config_path: Path, env: Mapping[str, str] | None = None) -> Se
         ),
         tenant=_load_tenant(_table(raw, "tenant")),
         smtp=SmtpSettings(
-            host=_str(smtp, "host", "smtp"),
+            host=smtp_host,
             port=_int(smtp, "port", "smtp"),
             username=_str(smtp, "username", "smtp"),
-            password=_secret(env, SMTP_PASSWORD_ENV),
+            password=smtp_password,
         ),
         discord=DiscordSettings(
             token=_secret(env, DISCORD_TOKEN_ENV),
