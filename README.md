@@ -74,7 +74,7 @@ sudo useradd --system --home-dir /opt/rent-receipt-bot --shell /sbin/nologin ren
 
 # Get the code. For a private repository, use a fine-grained GitHub token with
 # read-only access to this one repository as the password when prompted.
-sudo git clone https://github.com/shinjsu92/rent-receipt-bot.git /opt/rent-receipt-bot
+sudo git clone https://github.com/shinjsu92/landlord.git /opt/rent-receipt-bot
 
 # Install into the bot's own virtual environment.
 sudo python3.11 -m venv /opt/rent-receipt-bot/.venv
