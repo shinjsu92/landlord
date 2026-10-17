@@ -76,6 +76,7 @@ def test_opening_balance_and_billing_start(tmp_path: Path) -> None:
         ("Rent, September 2026", 100_000),
         ("Late fees before October 2026", 5_000),
     ]
+    assert [i.is_late_fee for i in tenant.opening_balance] == [False, True]
 
 
 def test_missing_billing_start(tmp_path: Path) -> None:

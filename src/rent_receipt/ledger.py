@@ -14,11 +14,11 @@ Payments pay off the oldest charges first, so the balance is simply everything
 charged minus everything paid, and the open items show what is still unpaid.
 
 Late fee rule: a month's late fee applies once its late fee date arrives if,
-counting every payment received before that date, the rent charged from
-``billing_start`` through that month isn't covered. For this test payments
-count toward rent before older balances and fees, so a tenant who pays the
-month's rent on time is never charged a late fee just because an old balance or
-an earlier late fee is still open.
+counting every payment received before that date, the rent owed through that
+month isn't covered. Rent owed means old rent from the opening balance plus
+rent from ``billing_start`` through that month. For this test payments count
+toward rent before late fees, so a tenant who is otherwise paid up is never
+charged a new late fee just because an earlier late fee is still open.
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ def charges(
         for item in tenant.opening_balance
     ]
 
-    rent_charged = 0
+    rent_charged = _opening_rent_cents(tenant)
     for period in _months(start, Period.containing(as_of)):
         rent_due = due_date(tenant, period)
         if rent_due > as_of:
@@ -187,8 +187,8 @@ def rent_unpaid_cents(tenant: Tenant, payments: Iterable[LedgerEntry], period: P
     if period < tenant.billing_start:
         return 0
     months = len(_months(tenant.billing_start, period))
-    paid = sum(p.amount_cents for p in payments)
-    return max(months * tenant.monthly_rent_cents - paid, 0)
+    rent = _opening_rent_cents(tenant) + months * tenant.monthly_rent_cents
+    return max(rent - sum(p.amount_cents for p in payments), 0)
 
 
 def balance_text(balance_cents: int) -> str:
@@ -198,6 +198,10 @@ def balance_text(balance_cents: int) -> str:
     if balance_cents > 0:
         return f"{format_cents(balance_cents)} remaining"
     return f"{format_cents(-balance_cents)} credit"
+
+
+def _opening_rent_cents(tenant: Tenant) -> int:
+    return sum(i.amount_cents for i in tenant.opening_balance if not i.is_late_fee)
 
 
 def _months(first: Period, last: Period) -> list[Period]:
