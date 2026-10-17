@@ -75,12 +75,13 @@ sudo mkdir -p /etc/rent-receipt-bot
 # Paste in the contents of config.example.toml from the repository, then fill it in.
 sudo nano /etc/rent-receipt-bot/config.toml
 
-# Secrets: readable by root only. Docker reads this file and passes the
-# values to the bot.
+# Secrets: readable only by the user the deploy logs in as (ec2-user here),
+# because docker reads this file as that user and passes the values to the bot.
 sudo tee /etc/rent-receipt-bot/secrets.env > /dev/null <<'SECRETS'
 DISCORD_BOT_TOKEN=paste-bot-token-here
 SMTP_PASSWORD=paste-gmail-app-password-here
 SECRETS
+sudo chown ec2-user /etc/rent-receipt-bot/secrets.env
 sudo chmod 600 /etc/rent-receipt-bot/secrets.env
 sudo nano /etc/rent-receipt-bot/secrets.env
 
