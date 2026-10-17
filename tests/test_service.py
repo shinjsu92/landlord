@@ -1,3 +1,4 @@
+import io
 from datetime import date, datetime
 from pathlib import Path
 
@@ -118,3 +119,13 @@ def test_email_failure_keeps_the_record(
 def test_resend_unknown_receipt(service: ReceiptService) -> None:
     with pytest.raises(ReceiptNotFoundError):
         service.resend(99)
+
+
+def test_preview_pdf_is_marked_and_saves_nothing(
+    service: ReceiptService, store: PaymentStore
+) -> None:
+    pdf_bytes = service.preview_pdf(service.prepare(60_000))
+    text = PdfReader(io.BytesIO(pdf_bytes)).pages[0].extract_text()
+    assert "PREVIEW - NOT SENT YET" in text
+    assert "BALANCE DUE $400.00" in text
+    assert store.recent() == []

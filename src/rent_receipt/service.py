@@ -138,6 +138,23 @@ class ReceiptService:
         lines.append(f"Will be emailed to: {tenant.email} (copy to you)")
         return "\n".join(lines)
 
+    def preview_pdf(self, draft: Draft) -> bytes:
+        """The receipt as it would look if sent now, marked as a preview."""
+        new = draft.payment
+        payment = Payment(
+            receipt_number=0,
+            tenant_email=new.tenant_email,
+            amount_cents=new.amount_cents,
+            received_on=new.received_on,
+            method=new.method,
+            note=new.note,
+            snapshot=draft.preview,
+            created_at=self._clock(),
+            emailed_at=None,
+        )
+        settings = self._settings
+        return render_receipt(payment, settings.landlord, settings.tenant, preview=True)
+
     def issue(self, draft: Draft) -> IssuedReceipt:
         """Record the payment, save its PDF and email it to the tenant.
 

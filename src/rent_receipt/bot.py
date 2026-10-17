@@ -124,7 +124,14 @@ class ConfirmView(discord.ui.View):
         self.stop()
         await interaction.response.edit_message(view=None)
         issued = await asyncio.to_thread(self._receipts.issue, self._draft)
-        await interaction.followup.send(_issued_text(issued), file=_pdf_file(issued))
+        text = _issued_text(issued)
+        if issued.payment.snapshot != self._draft.preview:
+            # Another payment was recorded after this preview was made.
+            text += (
+                "\nThe amounts differ from the preview because another payment was "
+                "recorded in between. The receipt uses the up-to-date amounts."
+            )
+        await interaction.followup.send(text, file=_pdf_file(issued))
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(
@@ -166,8 +173,11 @@ def _register_commands(bot: ReceiptBot) -> None:
         except (InvalidAmountError, InvalidPaymentDateError, ValueError) as exc:
             await interaction.response.send_message(f"⚠️ {exc}", ephemeral=True)
             return
+        pdf_bytes = await asyncio.to_thread(receipts.preview_pdf, draft)
         await interaction.response.send_message(
-            receipts.describe(draft), view=ConfirmView(receipts, draft)
+            receipts.describe(draft),
+            file=discord.File(io.BytesIO(pdf_bytes), filename="receipt-preview.pdf"),
+            view=ConfirmView(receipts, draft),
         )
 
     @bot.tree.command(name="balance", description="Show what the tenant owes")
