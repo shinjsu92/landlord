@@ -53,6 +53,8 @@ class OpeningItem:
 
     description: str
     amount_cents: int
+    is_late_fee: bool = False
+    """Old late fees don't count toward the late fee test; old rent does."""
 
 
 @dataclass(frozen=True)
@@ -224,7 +226,12 @@ def _opening_balance(table: Mapping[str, Any]) -> tuple[OpeningItem, ...]:
             amount = parse_amount(_str(item, "amount", where))
         except InvalidAmountError as exc:
             raise ConfigError(f"{where} amount: {exc}") from exc
-        result.append(OpeningItem(_str(item, "description", where), amount))
+        kind = _optional_str(item, "kind", where) or "rent"
+        if kind not in ("rent", "late_fee"):
+            raise ConfigError(f'{where} kind must be "rent" or "late_fee".')
+        result.append(
+            OpeningItem(_str(item, "description", where), amount, is_late_fee=kind == "late_fee")
+        )
     return tuple(result)
 
 

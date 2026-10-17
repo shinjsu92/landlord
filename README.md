@@ -39,7 +39,7 @@ The bot keeps one running balance for the tenant, like a bank statement:
 
 ### Late fee rule
 
-A month's late fee is added once its `late_fee_day` arrives, if the rent charged so far (from `billing_start` through that month) isn't covered by payments received **before** that day. For this check, payments count toward rent before older balances and earlier late fees, so a tenant who pays the month's rent on time never gets a new late fee just because an old fee is still open. Use `/waive_late_fee` to remove a month's fee. Some states cap late fees or require a grace period, so check your local rules.
+A month's late fee is added once its `late_fee_day` arrives, if the rent owed so far isn't covered by payments received **before** that day. Rent owed includes old rent from the opening balance, so unpaid back rent keeps making each month late. For this check, payments count toward rent before late fees, so a tenant who is otherwise paid up never gets a new late fee just because an old late fee is still open. Mark opening balance items that are late fees with `kind = "late_fee"` so they're left out of this check. Use `/waive_late_fee` to remove a month's fee. Some states cap late fees or require a grace period, so check your local rules.
 
 ### Receipts
 

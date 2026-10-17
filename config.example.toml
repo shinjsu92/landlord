@@ -39,6 +39,7 @@ amount = "1000.00"
 [[tenant.opening_balance]]
 description = "Late fees before October 2026"
 amount = "50.00"
+kind = "late_fee"                # "rent" (the default) or "late_fee"; see the README.
 
 [reminders]
 enabled = true
