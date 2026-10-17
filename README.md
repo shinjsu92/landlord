@@ -115,8 +115,10 @@ After the secrets are in place, push to `main` (or open **Actions → Test, buil
 ```bash
 docker ps --filter name=rent-receipt-bot     # Is it running?
 docker logs -f rent-receipt-bot              # Live log (Ctrl+C to stop). Look for "Logged in as".
-docker restart rent-receipt-bot              # Restart after editing config.toml or secrets.env.
+docker restart rent-receipt-bot              # Restart after editing config.toml.
 ```
+
+Docker reads `secrets.env` only when it creates the container, so `docker restart` keeps the old secrets. After editing `secrets.env`, re-run the deploy instead: **Actions → Test, build and deploy → Run workflow**.
 
 For a first real test, put your own email in `tenant.email`, run `/received amount:1` in Discord, and check that the receipt arrives. To clear the test payment before going live, run `docker stop rent-receipt-bot`, delete the files inside `/var/lib/rent-receipt-bot`, switch to the tenant's real email, and run `docker start rent-receipt-bot`. This erases all data, so only do it before real use.
 
