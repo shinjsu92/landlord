@@ -26,6 +26,16 @@ if [[ ! -d "$DATA_DIR" ]]; then
     exit 1
 fi
 
+# Snapshot every other container (name, ID and state) so we can prove the
+# deploy left them alone.
+other_containers() {
+    docker ps --all --format '{{.Names}} {{.ID}} {{.State}}' \
+        | grep -v "^$CONTAINER " | sort || true
+}
+before="$(other_containers)"
+echo "Other containers before deploy:"
+echo "${before:-  (none)}"
+
 echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
 docker pull "$IMAGE"
 docker logout ghcr.io
@@ -56,6 +66,19 @@ if [[ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER")" != "true" ]
     exit 1
 fi
 echo "Deployed $IMAGE"
+
+after="$(other_containers)"
+echo "Other containers after deploy:"
+echo "${after:-  (none)}"
+if [[ "$before" != "$after" ]]; then
+    echo "WARNING: another container changed during the deploy. Check it:" >&2
+    diff <(echo "$before") <(echo "$after") >&2 || true
+    exit 1
+fi
+echo "Other containers unchanged."
+echo "Server memory and disk:"
+free -m
+df -h /
 
 # Remove this app's unused images older than a week (matched by the source
 # label the build adds), so old versions don't fill the disk.
