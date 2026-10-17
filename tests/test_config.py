@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from rent_receipt.config import ConfigError, load_settings
+from rent_receipt.period import Period
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "config.example.toml"
 SECRETS = {"DISCORD_BOT_TOKEN": "token", "SMTP_PASSWORD": "app-password"}
@@ -65,3 +66,19 @@ def test_other_smtp_password_keeps_inner_spaces(tmp_path: Path) -> None:
     env = {**SECRETS, "SMTP_PASSWORD": "pass word\n"}
     settings = load_settings(write_config(tmp_path, text), env=env)
     assert settings.smtp.password == "pass word"
+
+
+def test_opening_balance_and_billing_start(tmp_path: Path) -> None:
+    settings = load_settings(write_config(tmp_path, filled_example()), env=SECRETS)
+    tenant = settings.tenant
+    assert tenant.billing_start == Period(2026, 10)
+    assert [(i.description, i.amount_cents) for i in tenant.opening_balance] == [
+        ("Rent, September 2026", 100_000),
+        ("Late fees before October 2026", 5_000),
+    ]
+
+
+def test_missing_billing_start(tmp_path: Path) -> None:
+    text = filled_example().replace('billing_start = "2026-10"', "")
+    with pytest.raises(ConfigError, match="billing_start"):
+        load_settings(write_config(tmp_path, text), env=SECRETS)

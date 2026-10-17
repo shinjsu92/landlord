@@ -10,11 +10,12 @@ In your private Discord server, type `/` to see the commands:
 
 | Command | What it does |
 |---|---|
-| `/received amount:1000` | Shows a receipt preview with **Send receipt** / **Cancel** buttons. Send records the payment, emails the PDF to the tenant (with a hidden copy to you), and posts the PDF in Discord. Optional fields: `method` (Cash, Check, Zelle…), `month` (`YYYY-MM`, defaults to this month), `note` (e.g. a check number), `waive_late_fee`. |
-| `/balance` | What's owed, paid and left for this month (or `month:2026-09`). |
+| `/received amount:1000` | Shows a receipt preview with **Send receipt** / **Cancel** buttons. Send records the payment, emails the PDF to the tenant (with a hidden copy to you), and posts the PDF in Discord. Optional fields: `method` (Cash, Check, Zelle…), `date` (`YYYY-MM-DD`, the day you received it; defaults to today), `note` (e.g. a check number). |
+| `/balance` | Everything the tenant owes right now, item by item. |
+| `/waive_late_fee` | Removes the late fee for this month (or `month:2026-09`). |
 | `/history` | The last 10 receipts. |
 | `/resend number:7` | Emails receipt R-000007 again (e.g. after an email problem). |
-| `/late_notice` | Emails the tenant a late notice for this month right now. |
+| `/late_notice` | Emails the tenant a late notice for the current balance right now. |
 
 Only you can use the bot. Anyone else gets "Sorry, this bot is private."
 
@@ -23,18 +24,26 @@ Only you can use the bot. Anyone else gets "Sorry, this bot is private."
 All reminders go out at `send_time` (default 9:00 AM, your time zone), each at most once a month:
 
 1. **Rent due day:** a Discord message to you with what's owed and what's left.
-2. **The day before the late fee date:** a heads-up if anything is unpaid. If the tenant already paid you outside the bot, record it now so they don't get a late notice.
-3. **Late fee date:** if a balance remains, the tenant gets a polite late notice email (rent, late fee, paid so far, balance due), and you get a Discord message saying it was sent.
+2. **The day before the late fee date:** a heads-up if the month's rent isn't covered yet. If the tenant already paid you outside the bot, record it now so they don't get a late fee or a late notice.
+3. **Late fee date:** if that month's late fee applied, the tenant gets a polite late notice email listing every unpaid charge and the balance due, and you get a Discord message saying it was sent.
 
 A reminder is only sent on its own day. If the bot was offline that whole day, it skips that reminder instead of sending it late. That way, starting the bot in the middle of a month never sends a surprise late notice.
 
+### How the balance works
+
+The bot keeps one running balance for the tenant, like a bank statement:
+
+- **Charges:** anything already owed when you started (`[[tenant.opening_balance]]` in the config), rent for every month from `billing_start`, and late fees.
+- **Payments** pay off the oldest charges first. Each receipt lists what was owed, what this payment paid off, and what is still owed.
+- **Overpayments** become a credit that the next month's rent uses up.
+
 ### Late fee rule
 
-The late fee is added to a month once its `late_fee_day` arrives, if that month's rent wasn't fully paid **before** that day. Use `waive_late_fee` on `/received` to skip it for that month. Some states cap late fees or require a grace period, so check your local rules.
+A month's late fee is added once its `late_fee_day` arrives, if the rent charged so far (from `billing_start` through that month) isn't covered by payments received **before** that day. For this check, payments count toward rent before older balances and earlier late fees, so a tenant who pays the month's rent on time never gets a new late fee just because an old fee is still open. Use `/waive_late_fee` to remove a month's fee. Some states cap late fees or require a grace period, so check your local rules.
 
 ### Receipts
 
-Receipt numbers (`R-000001`, `R-000002`, …) only go up and are never reused. Each receipt stores the rent, late fee and balance as they were when it was recorded, so re-sending an old receipt reproduces it exactly, even if you later change the rent. A copy of every PDF is kept in `/var/lib/rent-receipt-bot/receipts/`.
+Receipt numbers (`R-000001`, `R-000002`, …) only go up and are never reused. Each receipt stores what was owed and the balance as they were when it was recorded, so re-sending an old receipt reproduces it exactly, even if you later change the rent. A copy of every PDF is kept in `/var/lib/rent-receipt-bot/receipts/`.
 
 If an email fails, the payment and PDF are still saved. The bot tells you, and you can retry with `/resend`.
 
@@ -147,7 +156,7 @@ mypy src tests  # type check (strict)
 |---|---|
 | `config.py` | Loads `config.toml` and the secrets from environment variables, and validates them. |
 | `money.py`, `period.py` | Dollar amounts (stored as integer cents) and rent months. |
-| `ledger.py` | Pure late fee and balance rules. |
+| `ledger.py` | Pure account rules: charges, late fees, oldest-first payments and the balance. |
 | `storage.py` | SQLite: payments (one row per receipt) and the reminder log. |
 | `receipt_pdf.py` | Draws the PDF receipt (fpdf2, pure Python). |
 | `emailer.py` | Builds receipt and late notice emails, and sends them over SMTP. |

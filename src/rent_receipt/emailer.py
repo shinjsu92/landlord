@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import smtplib
 import ssl
-from datetime import date
 from email.message import EmailMessage
 from email.utils import formataddr
 from typing import Protocol
 
 from rent_receipt.config import Landlord, SmtpSettings, Tenant
-from rent_receipt.ledger import PeriodStatus
+from rent_receipt.ledger import AccountStatus, balance_text
 from rent_receipt.money import format_cents
 from rent_receipt.storage import Payment
 
@@ -60,16 +59,16 @@ def build_receipt_email(
 ) -> EmailMessage:
     """Email to the tenant with the PDF attached and a blind copy to the landlord."""
     message = _new_message(
-        f"Rent receipt {payment.receipt_id}: {payment.period.label}",
+        f"Rent receipt {payment.receipt_id}: {format_cents(payment.amount_cents)} received",
         landlord,
         tenant,
         sender_address,
     )
     message.set_content(
         f"Hi {tenant.name},\n\n"
-        f"Thank you for your payment of {format_cents(payment.amount_cents)} "
-        f"for {payment.period.label} rent, received on "
+        f"Thank you for your payment of {format_cents(payment.amount_cents)}, received on "
         f"{payment.received_on.strftime('%B %d, %Y')}.\n\n"
+        f"Remaining balance: {balance_text(payment.snapshot.balance_after_cents)}.\n\n"
         f"Your receipt ({payment.receipt_id}) is attached.\n\n"
         f"Best regards,\n{landlord.name}\n"
     )
@@ -83,32 +82,30 @@ def build_receipt_email(
 
 
 def build_late_notice_email(
-    status: PeriodStatus,
-    due_on: date,
+    status: AccountStatus,
     landlord: Landlord,
     tenant: Tenant,
     sender_address: str,
 ) -> EmailMessage:
-    """Polite late notice listing what is owed for the period."""
+    """Polite late notice listing every unpaid charge and the balance due."""
     message = _new_message(
-        f"Rent reminder: {status.period.label} balance of {format_cents(status.balance_cents)}",
+        f"Rent reminder: balance of {format_cents(status.balance_cents)}",
         landlord,
         tenant,
         sender_address,
     )
+    items = status.open_items
+    width = max(len(i.description) for i in items) + 2 if items else 0
     lines = [
         f"Hi {tenant.name},",
         "",
-        f"This is a friendly reminder that rent for {status.period.label} was due on "
-        f"{due_on.strftime('%B %d, %Y')}, and our records show a remaining balance.",
+        "This is a friendly reminder that our records show a balance on your rent account "
+        f"as of {status.as_of.strftime('%B %d, %Y')}:",
         "",
-        f"  Rent:          {format_cents(status.rent_cents)}",
     ]
-    if status.late_fee_cents:
-        lines.append(f"  Late fee:      {format_cents(status.late_fee_cents)}")
+    lines += [f"  {i.description + ':':<{width}} {format_cents(i.remaining_cents)}" for i in items]
     lines += [
-        f"  Paid so far:   {format_cents(status.paid_cents)}",
-        f"  Balance due:   {format_cents(status.balance_cents)}",
+        f"  {'Balance due:':<{width}} {format_cents(status.balance_cents)}",
         "",
         "If you have already sent this payment, thank you, and please disregard this "
         "message. Feel free to reply with any questions.",

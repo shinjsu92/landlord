@@ -41,7 +41,8 @@ def test_due_day_reminder_sent_once(reminders: ReminderService, clock: FakeClock
     clock.now = at(1)
     (message,) = reminders.run_due_reminders()
     assert "due today" in message
-    assert "$1,000.00 left to pay" in message
+    assert "owes $1,000.00 in total" in message
+    assert "- Rent, October 2026: $1,000.00" in message
     clock.now = at(1, hour=15)
     assert reminders.run_due_reminders() == []
 
@@ -59,7 +60,9 @@ def test_heads_up_then_late_notice_emails_tenant(
     assert "Late notice emailed" in notice
     (email,) = sender.sent
     assert "$1,050.00" in email["Subject"]
-    assert "Late fee:      $50.00" in email.get_content()
+    content = email.get_content()
+    assert "Late fee, October 2026:  $50.00" in content
+    assert "Balance due:             $1,050.00" in content
 
 
 def test_no_late_notice_when_paid(
@@ -91,3 +94,15 @@ def test_failed_late_notice_is_reported_not_repeated(
     assert "couldn't email" in message
     clock.now = at(6, hour=10)
     assert reminders.run_due_reminders() == []
+
+
+def test_no_late_notice_when_waived(
+    reminders: ReminderService, receipts: ReceiptService, clock: FakeClock, sender: FakeSender
+) -> None:
+    clock.now = at(5)
+    receipts.waive_late_fee()
+    assert reminders.run_due_reminders() == []
+
+    clock.now = at(6)
+    assert reminders.run_due_reminders() == []
+    assert sender.sent == []

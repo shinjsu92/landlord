@@ -18,6 +18,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from rent_receipt.money import InvalidAmountError, parse_amount
+from rent_receipt.period import InvalidPeriodError, Period
 
 DISCORD_TOKEN_ENV = "DISCORD_BOT_TOKEN"
 SMTP_PASSWORD_ENV = "SMTP_PASSWORD"
@@ -47,6 +48,14 @@ class Landlord:
 
 
 @dataclass(frozen=True)
+class OpeningItem:
+    """Something already owed when the bot starts tracking, e.g. last month's rent."""
+
+    description: str
+    amount_cents: int
+
+
+@dataclass(frozen=True)
 class Tenant:
     name: str
     email: str
@@ -58,6 +67,10 @@ class Tenant:
     """First day of the month the late fee applies, e.g. 6 ("late from the 6th")."""
     late_fee_cents: int
     default_payment_method: str
+    billing_start: Period
+    """First month the bot charges rent for."""
+    opening_balance: tuple[OpeningItem, ...] = ()
+    """What was already owed before ``billing_start``, oldest first."""
     phone: str | None = None
     lease_start: date | None = None
     lease_end: date | None = None
@@ -181,11 +194,38 @@ def _load_tenant(table: Mapping[str, Any]) -> Tenant:
         late_fee_day=late_fee_day,
         late_fee_cents=_amount(table, "late_fee", allow_zero=True),
         default_payment_method=method,
+        billing_start=_period(table, "billing_start"),
+        opening_balance=_opening_balance(table),
         phone=_optional_str(table, "phone", "tenant"),
         lease_start=_optional_date(table, "lease_start"),
         lease_end=_optional_date(table, "lease_end"),
         security_deposit_cents=None if deposit is None else _amount(table, "security_deposit"),
     )
+
+
+def _period(table: Mapping[str, Any], key: str) -> Period:
+    text = _str(table, key, "tenant")
+    try:
+        return Period.parse(text)
+    except InvalidPeriodError as exc:
+        raise ConfigError(f"tenant.{key}: {exc}") from exc
+
+
+def _opening_balance(table: Mapping[str, Any]) -> tuple[OpeningItem, ...]:
+    items = table.get("opening_balance", [])
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        raise ConfigError(
+            "tenant.opening_balance must be a list of [[tenant.opening_balance]] sections."
+        )
+    result: list[OpeningItem] = []
+    for item in items:
+        where = "[[tenant.opening_balance]]"
+        try:
+            amount = parse_amount(_str(item, "amount", where))
+        except InvalidAmountError as exc:
+            raise ConfigError(f"{where} amount: {exc}") from exc
+        result.append(OpeningItem(_str(item, "description", where), amount))
+    return tuple(result)
 
 
 def _table(raw: Mapping[str, Any], name: str) -> Mapping[str, Any]:

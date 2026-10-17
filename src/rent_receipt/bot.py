@@ -10,17 +10,24 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+from datetime import date
 
 import discord
 from discord import app_commands
 from discord.ext import tasks
 
 from rent_receipt.config import PAYMENT_METHODS, Settings
-from rent_receipt.ledger import balance_text
+from rent_receipt.ledger import AccountStatus, balance_text
 from rent_receipt.money import InvalidAmountError, format_cents, parse_amount
 from rent_receipt.period import InvalidPeriodError, Period
-from rent_receipt.reminders import ReminderService
-from rent_receipt.service import Draft, IssuedReceipt, ReceiptNotFoundError, ReceiptService
+from rent_receipt.reminders import ReminderService, owed_lines
+from rent_receipt.service import (
+    Draft,
+    InvalidPaymentDateError,
+    IssuedReceipt,
+    ReceiptNotFoundError,
+    ReceiptService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,58 +142,52 @@ def _register_commands(bot: ReceiptBot) -> None:
     @app_commands.describe(
         amount="Amount received, e.g. 1000 or 1000.50",
         method="How it was paid (defaults to the tenant's usual method)",
-        month="Month it covers as YYYY-MM (defaults to this month)",
+        received_on="Day you received it as YYYY-MM-DD (defaults to today)",
         note="Optional note for the receipt, e.g. a check number",
-        waive_late_fee="Skip the late fee for this month",
     )
+    @app_commands.rename(received_on="date")
     @app_commands.choices(method=_METHOD_CHOICES)
     async def received(
         interaction: discord.Interaction,
         amount: str,
         method: app_commands.Choice[str] | None = None,
-        month: str | None = None,
+        received_on: str | None = None,
         note: str | None = None,
-        waive_late_fee: bool = False,
     ) -> None:
         try:
             amount_cents = parse_amount(amount)
-            period = Period.parse(month) if month else None
-        except (InvalidAmountError, InvalidPeriodError) as exc:
+            draft = await asyncio.to_thread(
+                receipts.prepare,
+                amount_cents,
+                _parse_date(received_on) if received_on else None,
+                method.value if method else None,
+                note,
+            )
+        except (InvalidAmountError, InvalidPaymentDateError, ValueError) as exc:
             await interaction.response.send_message(f"⚠️ {exc}", ephemeral=True)
             return
-
-        draft = await asyncio.to_thread(
-            receipts.prepare,
-            amount_cents,
-            period,
-            method.value if method else None,
-            note,
-            waive_late_fee,
-        )
         await interaction.response.send_message(
             receipts.describe(draft), view=ConfirmView(receipts, draft)
         )
 
-    @bot.tree.command(name="balance", description="Show what is owed for a month")
+    @bot.tree.command(name="balance", description="Show what the tenant owes")
+    async def balance(interaction: discord.Interaction) -> None:
+        status = await asyncio.to_thread(receipts.status)
+        await interaction.response.send_message(_balance_text(status))
+
+    @bot.tree.command(name="waive_late_fee", description="Remove the late fee for a month")
     @app_commands.describe(month="Month as YYYY-MM (defaults to this month)")
-    async def balance(interaction: discord.Interaction, month: str | None = None) -> None:
+    async def waive_late_fee(interaction: discord.Interaction, month: str | None = None) -> None:
         try:
             period = Period.parse(month) if month else None
         except InvalidPeriodError as exc:
             await interaction.response.send_message(f"⚠️ {exc}", ephemeral=True)
             return
-        status = await asyncio.to_thread(receipts.status, period)
-        lines = [
-            f"**{status.period.label}**",
-            f"Rent: {format_cents(status.rent_cents)}",
-        ]
-        if status.late_fee_cents:
-            lines.append(f"Late fee: {format_cents(status.late_fee_cents)}")
-        lines += [
-            f"Paid: {format_cents(status.paid_cents)}",
-            f"Balance: {balance_text(status.balance_cents)}",
-        ]
-        await interaction.response.send_message("\n".join(lines))
+        status = await asyncio.to_thread(receipts.waive_late_fee, period)
+        label = (period or Period.containing(status.as_of)).label
+        await interaction.response.send_message(
+            f"👍 The late fee for {label} is waived.\n{_balance_text(status)}"
+        )
 
     @bot.tree.command(name="history", description="Show the latest receipts")
     async def history(interaction: discord.Interaction) -> None:
@@ -196,7 +197,8 @@ def _register_commands(bot: ReceiptBot) -> None:
             return
         lines = [
             f"`{p.receipt_id}` {p.received_on:%b %d, %Y}: {format_cents(p.amount_cents)} "
-            f"for {p.period.label} ({p.method})" + ("" if p.emailed_at else " ⚠️ not emailed")
+            f"({p.method}), balance after {balance_text(p.snapshot.balance_after_cents)}"
+            + ("" if p.emailed_at else " ⚠️ not emailed")
             for p in payments
         ]
         await interaction.response.send_message("\n".join(lines))
@@ -213,12 +215,25 @@ def _register_commands(bot: ReceiptBot) -> None:
         await interaction.followup.send(_issued_text(issued), file=_pdf_file(issued))
 
     @bot.tree.command(
-        name="late_notice", description="Email the tenant a late notice for this month now"
+        name="late_notice", description="Email the tenant a late notice for the balance now"
     )
     async def late_notice(interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True)
         text = await asyncio.to_thread(bot.reminders.send_late_notice)
         await interaction.followup.send(text)
+
+
+def _parse_date(text: str) -> date:
+    try:
+        return date.fromisoformat(text.strip())
+    except ValueError:
+        raise ValueError(f"{text!r} is not a date. Use YYYY-MM-DD, e.g. 2026-10-03.") from None
+
+
+def _balance_text(status: AccountStatus) -> str:
+    if status.balance_cents <= 0:
+        return f"**Balance: {balance_text(status.balance_cents)}**"
+    return f"**Balance: {format_cents(status.balance_cents)}**\n{owed_lines(status)}"
 
 
 def _issued_text(issued: IssuedReceipt) -> str:

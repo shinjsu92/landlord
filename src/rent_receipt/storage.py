@@ -1,14 +1,16 @@
-"""SQLite storage for payments and sent reminders.
+"""SQLite storage for payments, late fee waivers and sent reminders.
 
 Each payment row is also its receipt. The row's ``receipt_number`` is assigned
 by SQLite with AUTOINCREMENT, so numbers only ever go up and are never reused.
-Each row also stores the rent, late fee and balance as they were when the
-payment was recorded, so re-sending an old receipt always reproduces it
-exactly, even after the rent in the config changes.
+Each row also stores what was owed before the payment and the balance after it,
+so re-sending an old receipt always reproduces it exactly, even after the rent
+in the config changes.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -18,24 +20,32 @@ from pathlib import Path
 
 from rent_receipt.period import Period
 
+logger = logging.getLogger(__name__)
+
+_SCHEMA_VERSION = 2
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS payments (
-    receipt_number      INTEGER PRIMARY KEY AUTOINCREMENT,
-    tenant_email        TEXT    NOT NULL,
-    amount_cents        INTEGER NOT NULL CHECK (amount_cents > 0),
-    period              TEXT    NOT NULL,  -- YYYY-MM
-    received_on         TEXT    NOT NULL,  -- ISO date
-    method              TEXT    NOT NULL,
-    note                TEXT,
-    waive_late_fee      INTEGER NOT NULL DEFAULT 0,
-    rent_cents          INTEGER NOT NULL,
-    late_fee_cents      INTEGER NOT NULL,
-    paid_before_cents   INTEGER NOT NULL,
-    balance_after_cents INTEGER NOT NULL,
-    created_at          TEXT    NOT NULL,  -- ISO timestamp with offset
-    emailed_at          TEXT               -- NULL until the email is sent
+    receipt_number       INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_email         TEXT    NOT NULL,
+    amount_cents         INTEGER NOT NULL CHECK (amount_cents > 0),
+    received_on          TEXT    NOT NULL,  -- ISO date
+    method               TEXT    NOT NULL,
+    note                 TEXT,
+    balance_before_cents INTEGER NOT NULL,
+    balance_after_cents  INTEGER NOT NULL,
+    open_items           TEXT    NOT NULL,  -- JSON [[description, cents], ...] before it
+    created_at           TEXT    NOT NULL,  -- ISO timestamp with offset
+    emailed_at           TEXT               -- NULL until the email is sent
 );
-CREATE INDEX IF NOT EXISTS payments_by_period ON payments (tenant_email, period);
+CREATE INDEX IF NOT EXISTS payments_by_tenant ON payments (tenant_email, received_on);
+
+CREATE TABLE IF NOT EXISTS late_fee_waivers (
+    tenant_email TEXT NOT NULL,
+    period       TEXT NOT NULL,  -- YYYY-MM
+    waived_at    TEXT NOT NULL,
+    PRIMARY KEY (tenant_email, period)
+);
 
 CREATE TABLE IF NOT EXISTS reminders_sent (
     kind    TEXT NOT NULL,
@@ -52,20 +62,25 @@ class NewPayment:
 
     tenant_email: str
     amount_cents: int
-    period: Period
     received_on: date
     method: str
     note: str | None
-    waive_late_fee: bool = False
+
+
+@dataclass(frozen=True)
+class SnapshotItem:
+    description: str
+    amount_cents: int
 
 
 @dataclass(frozen=True)
 class Snapshot:
-    """Amounts for the period at the moment a payment is recorded."""
+    """The account at the moment a payment is recorded."""
 
-    rent_cents: int
-    late_fee_cents: int
-    paid_before_cents: int
+    owed_before: tuple[SnapshotItem, ...]
+    """Unpaid charges before this payment, oldest first."""
+    balance_before_cents: int
+    """Can be lower than the sum of ``owed_before`` when the tenant had a credit."""
     balance_after_cents: int
 
 
@@ -74,11 +89,9 @@ class Payment:
     receipt_number: int
     tenant_email: str
     amount_cents: int
-    period: Period
     received_on: date
     method: str
     note: str | None
-    waive_late_fee: bool
     snapshot: Snapshot
     created_at: datetime
     emailed_at: datetime | None
@@ -90,7 +103,7 @@ class Payment:
 
 
 SnapshotFn = Callable[[list[Payment]], Snapshot]
-"""Given the period's earlier payments, compute the new payment's snapshot."""
+"""Given the tenant's saved payments, compute the new payment's snapshot."""
 
 
 class PaymentStore:
@@ -109,44 +122,41 @@ class PaymentStore:
         self._connection.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         with self._lock:
+            self._migrate()
             self._connection.executescript(_SCHEMA)
+            self._connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     def close(self) -> None:
         with self._lock:
             self._connection.close()
 
-    def payments_for(self, tenant_email: str, period: Period) -> list[Payment]:
+    def payments(self, tenant_email: str) -> list[Payment]:
         with self._lock:
-            return self._payments_for(tenant_email, period)
+            return self._payments(tenant_email)
 
     def add(self, payment: NewPayment, snapshot_fn: SnapshotFn, created_at: datetime) -> Payment:
-        """Save a payment, computing its snapshot from the period's earlier payments.
+        """Save a payment, computing its snapshot from the tenant's saved payments.
 
-        Reading the earlier payments and inserting happen in one transaction,
-        so the stored balance always matches what was recorded before it.
+        Reading the saved payments and inserting happen in one transaction, so
+        the stored balance always matches what was recorded before it.
         """
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
-                earlier = self._payments_for(payment.tenant_email, payment.period)
-                snapshot = snapshot_fn(earlier)
+                snapshot = snapshot_fn(self._payments(payment.tenant_email))
                 cursor = self._connection.execute(
-                    "INSERT INTO payments (tenant_email, amount_cents, period, received_on,"
-                    " method, note, waive_late_fee, rent_cents, late_fee_cents,"
-                    " paid_before_cents, balance_after_cents, created_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO payments (tenant_email, amount_cents, received_on, method,"
+                    " note, balance_before_cents, balance_after_cents, open_items, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         payment.tenant_email,
                         payment.amount_cents,
-                        payment.period.key,
                         payment.received_on.isoformat(),
                         payment.method,
                         payment.note,
-                        int(payment.waive_late_fee),
-                        snapshot.rent_cents,
-                        snapshot.late_fee_cents,
-                        snapshot.paid_before_cents,
+                        snapshot.balance_before_cents,
                         snapshot.balance_after_cents,
+                        json.dumps([[i.description, i.amount_cents] for i in snapshot.owed_before]),
                         created_at.isoformat(),
                     ),
                 )
@@ -178,6 +188,21 @@ class PaymentStore:
             ).fetchall()
         return [_to_payment(row) for row in rows]
 
+    def waived_periods(self, tenant_email: str) -> set[Period]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT period FROM late_fee_waivers WHERE tenant_email = ?", (tenant_email,)
+            ).fetchall()
+        return {Period.parse(row["period"]) for row in rows}
+
+    def waive_late_fee(self, tenant_email: str, period: Period, waived_at: datetime) -> None:
+        with self._lock:
+            self._connection.execute(
+                "INSERT OR IGNORE INTO late_fee_waivers (tenant_email, period, waived_at)"
+                " VALUES (?, ?, ?)",
+                (tenant_email, period.key, waived_at.isoformat()),
+            )
+
     def reminder_sent(self, kind: str, period: Period) -> bool:
         with self._lock:
             row = self._connection.execute(
@@ -195,10 +220,28 @@ class PaymentStore:
 
     # The helpers below expect the caller to hold ``self._lock``.
 
-    def _payments_for(self, tenant_email: str, period: Period) -> list[Payment]:
+    def _migrate(self) -> None:
+        """Move aside payments saved by the first, per-month version of the bot.
+
+        Those rows have no account balance, so they can't be carried over. The
+        old table is kept as ``payments_v1`` for reference, not deleted.
+        """
+        version = self._connection.execute("PRAGMA user_version").fetchone()[0]
+        has_payments = self._connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'payments'"
+        ).fetchone()
+        if version < _SCHEMA_VERSION and has_payments:
+            logger.warning(
+                "Found payments from the old per-month format. They were moved to the "
+                "payments_v1 table and are no longer counted."
+            )
+            self._connection.execute("DROP INDEX IF EXISTS payments_by_period")
+            self._connection.execute("ALTER TABLE payments RENAME TO payments_v1")
+
+    def _payments(self, tenant_email: str) -> list[Payment]:
         rows = self._connection.execute(
-            "SELECT * FROM payments WHERE tenant_email = ? AND period = ? ORDER BY receipt_number",
-            (tenant_email, period.key),
+            "SELECT * FROM payments WHERE tenant_email = ? ORDER BY received_on, receipt_number",
+            (tenant_email,),
         ).fetchall()
         return [_to_payment(row) for row in rows]
 
@@ -215,15 +258,15 @@ def _to_payment(row: sqlite3.Row) -> Payment:
         receipt_number=row["receipt_number"],
         tenant_email=row["tenant_email"],
         amount_cents=row["amount_cents"],
-        period=Period.parse(row["period"]),
         received_on=date.fromisoformat(row["received_on"]),
         method=row["method"],
         note=row["note"],
-        waive_late_fee=bool(row["waive_late_fee"]),
         snapshot=Snapshot(
-            rent_cents=row["rent_cents"],
-            late_fee_cents=row["late_fee_cents"],
-            paid_before_cents=row["paid_before_cents"],
+            owed_before=tuple(
+                SnapshotItem(description, cents)
+                for description, cents in json.loads(row["open_items"])
+            ),
+            balance_before_cents=row["balance_before_cents"],
             balance_after_cents=row["balance_after_cents"],
         ),
         created_at=datetime.fromisoformat(row["created_at"]),
