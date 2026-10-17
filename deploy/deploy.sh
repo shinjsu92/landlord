@@ -36,9 +36,13 @@ before="$(other_containers)"
 echo "Other containers before deploy:"
 echo "${before:-  (none)}"
 
-echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
-docker pull "$IMAGE"
-docker logout ghcr.io
+# Log in with a throwaway Docker config, so this never reads or changes the
+# server's own registry logins (e.g. another app's ECR credentials).
+pull_config="$(mktemp -d)"
+trap 'rm -rf "$pull_config"' EXIT
+echo "$GHCR_TOKEN" | docker --config "$pull_config" login ghcr.io \
+    --username "$GHCR_USER" --password-stdin
+docker --config "$pull_config" pull "$IMAGE"
 
 docker rm --force "$CONTAINER" 2>/dev/null || true
 # No ports are published: the bot only makes outgoing connections.
