@@ -38,6 +38,12 @@ class Period:
         """The period that a given day falls in."""
         return cls(year=day.year, month=day.month)
 
+    def next(self) -> Period:
+        """The following month."""
+        if self.month == 12:
+            return Period(self.year + 1, 1)
+        return Period(self.year, self.month + 1)
+
     @property
     def key(self) -> str:
         """Stable storage form, e.g. ``"2026-10"``."""

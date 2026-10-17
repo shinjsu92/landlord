@@ -5,9 +5,10 @@ outside this app's own virtual environment. The built-in Helvetica font covers
 English (Latin-1) text only; see the README if you need other alphabets.
 
 Layout, top to bottom: a header band with the landlord's contact details, a row
-of key facts (receipt number, date, period, method), who paid and for which
-property, an itemized table that ends in the balance, the amount paid with a
-paid-in-full or balance-due badge, an optional note, and a footer.
+of key facts (receipt number, date, method), who paid and for which property, a
+table of what was owed, what this payment paid off (oldest first) and what is
+still owed, the amount paid with a paid-in-full or balance-due badge, an
+optional note, and a footer.
 """
 
 from __future__ import annotations
@@ -86,7 +87,6 @@ def _key_facts(pdf: FPDF, payment: Payment) -> None:
     facts = [
         ("RECEIPT NO.", payment.receipt_id),
         ("DATE RECEIVED", payment.received_on.strftime("%B %d, %Y").replace(" 0", " ")),
-        ("RENT PERIOD", payment.period.label),
         ("PAYMENT METHOD", payment.method),
     ]
     width = (pdf.w - 2 * _MARGIN) / len(facts)
@@ -132,42 +132,57 @@ def _parties(pdf: FPDF, landlord: Landlord, tenant: Tenant) -> None:
 def _line_items(pdf: FPDF, payment: Payment) -> None:
     snapshot = payment.snapshot
     width = pdf.w - 2 * _MARGIN
-    amount_width = 45.0
+    amount_width = 32.0
+    description_width = width - 3 * amount_width
     row_height = 8.0
+
+    def row(cells: tuple[str, str, str, str], *, border: str = "", fill: bool = False) -> None:
+        pdf.cell(description_width, row_height, f"  {cells[0]}", border=border, fill=fill)
+        for text in cells[1:]:
+            pdf.cell(amount_width, row_height, f"{text}  ", border=border, fill=fill, align=Align.R)
+        pdf.ln(row_height)
 
     pdf.set_fill_color(*_NAVY)
     pdf.set_text_color(*_WHITE)
     pdf.set_font(_FONT, style="B", size=9)
-    pdf.cell(width - amount_width, row_height, "  DESCRIPTION", fill=True)
-    pdf.cell(amount_width, row_height, "AMOUNT  ", fill=True, align=Align.R)
-    pdf.ln(row_height)
+    row(("OWED BEFORE THIS PAYMENT", "OWED", "PAID NOW", "STILL OWED"), fill=True)
     pdf.set_text_color(*_INK)
-
-    rows = [(f"Monthly rent, {payment.period.label}", format_cents(snapshot.rent_cents))]
-    if snapshot.late_fee_cents:
-        rows.append(("Late fee", format_cents(snapshot.late_fee_cents)))
-    if snapshot.paid_before_cents:
-        rows.append(("Less: previously paid", f"-{format_cents(snapshot.paid_before_cents)}"))
-    rows.append(("Less: this payment", f"-{format_cents(payment.amount_cents)}"))
 
     pdf.set_font(_FONT, size=10)
     pdf.set_draw_color(*_RULE)
-    for description, amount in rows:
-        pdf.cell(width - amount_width, row_height, f"  {description}", border="B")
-        pdf.cell(amount_width, row_height, f"{amount}  ", border="B", align=Align.R)
-        pdf.ln(row_height)
+    unapplied = payment.amount_cents
+    for item in snapshot.owed_before:
+        applied = min(item.amount_cents, unapplied)
+        unapplied -= applied
+        row(
+            (
+                item.description,
+                format_cents(item.amount_cents),
+                format_cents(applied) if applied else "-",
+                format_cents(item.amount_cents - applied),
+            ),
+            border="B",
+        )
+    if snapshot.balance_before_cents < 0:
+        credit = format_cents(-snapshot.balance_before_cents)
+        row(("Credit already on account", f"-{credit}", "-", f"-{credit}"), border="B")
+    if unapplied > 0 and snapshot.balance_after_cents < 0:
+        row(("Credit toward future rent", "-", format_cents(unapplied), "-"), border="B")
+    if not snapshot.owed_before and snapshot.balance_before_cents >= 0:
+        row(("Nothing was owed", "-", "-", "-"), border="B")
 
-    pdf.set_font(_FONT, style="B", size=11)
+    pdf.set_font(_FONT, style="B", size=10)
     pdf.set_fill_color(*_PANEL)
-    pdf.cell(width - amount_width, row_height + 1, "  Balance remaining", fill=True)
-    pdf.cell(
-        amount_width,
-        row_height + 1,
-        f"{_balance_amount(snapshot.balance_after_cents)}  ",
+    row(
+        (
+            "Total",
+            _balance_amount(snapshot.balance_before_cents),
+            format_cents(payment.amount_cents),
+            _balance_amount(snapshot.balance_after_cents),
+        ),
         fill=True,
-        align=Align.R,
     )
-    pdf.ln(row_height + 1 + 9)
+    pdf.ln(9)
 
 
 def _amount_paid(pdf: FPDF, payment: Payment) -> None:

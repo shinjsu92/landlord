@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -6,7 +6,7 @@ from pypdf import PdfReader
 
 from rent_receipt.config import Settings
 from rent_receipt.period import Period
-from rent_receipt.service import ReceiptNotFoundError, ReceiptService
+from rent_receipt.service import InvalidPaymentDateError, ReceiptNotFoundError, ReceiptService
 from rent_receipt.storage import PaymentStore
 
 from .conftest import TZ, FakeClock, FakeSender
@@ -19,9 +19,9 @@ def service(
     return ReceiptService(settings, store, sender, clock=clock)
 
 
-def test_prepare_defaults_to_this_month_and_tenant_method(service: ReceiptService) -> None:
+def test_prepare_defaults_to_today_and_tenant_method(service: ReceiptService) -> None:
     draft = service.prepare(100_000)
-    assert draft.payment.period == Period(2026, 10)
+    assert draft.payment.received_on == date(2026, 10, 3)
     assert draft.payment.method == "Zelle"
     assert draft.preview.balance_after_cents == 0
     assert "paid in full" in service.describe(draft)
@@ -51,15 +51,16 @@ def test_issue_records_saves_pdf_and_emails(service: ReceiptService, sender: Fak
 def test_receipt_pdf_shows_key_details(service: ReceiptService, tmp_path: Path) -> None:
     issued = service.issue(service.prepare(60_000))
     text = PdfReader(issued.pdf_path).pages[0].extract_text()
-    for expected in ["R-000001", "Jane Kim", "October 2026", "$600.00", "BALANCE DUE $400.00"]:
-        assert expected in text
+    expected = ["R-000001", "Jane Kim", "Rent, October 2026", "$600.00", "BALANCE DUE $400.00"]
+    for snippet in expected:
+        assert snippet in text
 
 
 def test_partial_payments_carry_balance(service: ReceiptService) -> None:
     first = service.issue(service.prepare(60_000)).payment
     second = service.issue(service.prepare(40_000)).payment
     assert first.snapshot.balance_after_cents == 40_000
-    assert second.snapshot.paid_before_cents == 60_000
+    assert second.snapshot.balance_before_cents == 40_000
     assert second.snapshot.balance_after_cents == 0
     assert second.receipt_number == first.receipt_number + 1
 
@@ -67,13 +68,34 @@ def test_partial_payments_carry_balance(service: ReceiptService) -> None:
 def test_late_payment_adds_fee_unless_waived(service: ReceiptService, clock: FakeClock) -> None:
     clock.now = datetime(2026, 10, 10, 12, 0, tzinfo=TZ)
     late = service.issue(service.prepare(100_000)).payment
-    assert late.snapshot.late_fee_cents == 5_000
+    assert [i.description for i in late.snapshot.owed_before] == [
+        "Rent, October 2026",
+        "Late fee, October 2026",
+    ]
     assert late.snapshot.balance_after_cents == 5_000
 
-    clock.now = datetime(2026, 11, 10, 12, 0, tzinfo=TZ)
-    waived = service.issue(service.prepare(100_000, waive_late_fee=True)).payment
-    assert waived.snapshot.late_fee_cents == 0
-    assert waived.snapshot.balance_after_cents == 0
+    assert service.waive_late_fee(Period(2026, 10)).balance_cents == 0
+    # The receipt already issued keeps the amounts it was issued with.
+    assert service.recent(1)[0].snapshot.balance_after_cents == 5_000
+
+
+def test_backdated_payment_avoids_late_fee(service: ReceiptService, clock: FakeClock) -> None:
+    clock.now = datetime(2026, 10, 10, 12, 0, tzinfo=TZ)
+    service.issue(service.prepare(100_000, received_on=date(2026, 10, 4)))
+    assert service.status().balance_cents == 0
+
+
+def test_future_date_is_refused(service: ReceiptService) -> None:
+    with pytest.raises(InvalidPaymentDateError):
+        service.prepare(100_000, received_on=date(2026, 10, 4))
+
+
+def test_overpayment_becomes_credit(service: ReceiptService) -> None:
+    issued = service.issue(service.prepare(120_000))
+    assert issued.payment.snapshot.balance_after_cents == -20_000
+    text = PdfReader(issued.pdf_path).pages[0].extract_text()
+    assert "Credit toward future rent" in text
+    assert "CREDIT $200.00" in text
 
 
 def test_email_failure_keeps_the_record(

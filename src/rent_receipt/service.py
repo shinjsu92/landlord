@@ -14,17 +14,21 @@ from pathlib import Path
 
 from rent_receipt.config import Settings
 from rent_receipt.emailer import EmailSender, build_receipt_email
-from rent_receipt.ledger import PeriodStatus, balance_text, period_status
+from rent_receipt.ledger import AccountStatus, account_status, balance_text
 from rent_receipt.money import format_cents
 from rent_receipt.period import Period
 from rent_receipt.receipt_pdf import render_receipt
-from rent_receipt.storage import NewPayment, Payment, PaymentStore, Snapshot
+from rent_receipt.storage import NewPayment, Payment, PaymentStore, Snapshot, SnapshotItem
 
 logger = logging.getLogger(__name__)
 
 
 class ReceiptNotFoundError(LookupError):
     """Raised when a receipt number doesn't exist."""
+
+
+class InvalidPaymentDateError(ValueError):
+    """Raised when a received date is in the future."""
 
 
 @dataclass(frozen=True)
@@ -67,36 +71,50 @@ class ReceiptService:
     def today(self) -> date:
         return self._clock().date()
 
-    def status(self, period: Period | None = None, as_of: date | None = None) -> PeriodStatus:
-        """What is owed and paid for ``period`` (default: this month)."""
-        as_of = as_of or self.today()
-        period = period or Period.containing(as_of)
+    def status(self, as_of: date | None = None) -> AccountStatus:
+        """The tenant's account on ``as_of`` (default: today)."""
         tenant = self._settings.tenant
-        payments = self._store.payments_for(tenant.email, period)
-        return period_status(tenant, period, payments, as_of)
+        return account_status(
+            tenant,
+            self._store.payments(tenant.email),
+            self._store.waived_periods(tenant.email),
+            as_of or self.today(),
+        )
+
+    def waive_late_fee(self, period: Period | None = None) -> AccountStatus:
+        """Waive the late fee for ``period`` (default: this month) and return the new status."""
+        tenant = self._settings.tenant
+        self._store.waive_late_fee(
+            tenant.email, period or Period.containing(self.today()), self._clock()
+        )
+        return self.status()
 
     def prepare(
         self,
         amount_cents: int,
-        period: Period | None = None,
+        received_on: date | None = None,
         method: str | None = None,
         note: str | None = None,
-        waive_late_fee: bool = False,
     ) -> Draft:
         """Build a draft for the landlord to confirm. Nothing is saved yet."""
         tenant = self._settings.tenant
-        received_on = self.today()
+        today = self.today()
+        received_on = received_on or today
+        if received_on > today:
+            raise InvalidPaymentDateError(
+                f"{received_on:%B %d, %Y} is in the future. Use the date you received it."
+            )
         new_payment = NewPayment(
             tenant_email=tenant.email,
             amount_cents=amount_cents,
-            period=period or Period.containing(received_on),
             received_on=received_on,
             method=method or tenant.default_payment_method,
             note=note.strip() if note and note.strip() else None,
-            waive_late_fee=waive_late_fee,
         )
-        earlier = self._store.payments_for(tenant.email, new_payment.period)
-        return Draft(payment=new_payment, preview=self._snapshot(new_payment, earlier))
+        saved = self._store.payments(tenant.email)
+        waived = self._store.waived_periods(tenant.email)
+        preview = self._snapshot(new_payment, saved, waived)
+        return Draft(payment=new_payment, preview=preview)
 
     def describe(self, draft: Draft) -> str:
         """Short preview shown before the landlord confirms."""
@@ -104,17 +122,17 @@ class ReceiptService:
         tenant = self._settings.tenant
         lines = [
             f"**Receipt for {tenant.name}** ({tenant.property_address})",
-            f"Amount: **{format_cents(payment.amount_cents)}** for **{payment.period.label}**",
-            f"Received: {payment.received_on:%B %d, %Y} by {payment.method}",
-            f"Rent: {format_cents(preview.rent_cents)}",
+            f"Amount: **{format_cents(payment.amount_cents)}**, received "
+            f"{payment.received_on:%B %d, %Y} by {payment.method}",
+            "Owed before this: "
+            + (
+                format_cents(preview.balance_before_cents)
+                if preview.balance_before_cents > 0
+                else balance_text(preview.balance_before_cents)
+            ),
         ]
-        if preview.late_fee_cents:
-            lines.append(f"Late fee: {format_cents(preview.late_fee_cents)}")
-        elif payment.waive_late_fee:
-            lines.append("Late fee: waived")
-        if preview.paid_before_cents:
-            lines.append(f"Previously paid: {format_cents(preview.paid_before_cents)}")
-        lines.append(f"Balance after this: {balance_text(preview.balance_after_cents)}")
+        lines += [f"- {i.description}: {format_cents(i.amount_cents)}" for i in preview.owed_before]
+        lines.append(f"Balance after this: **{balance_text(preview.balance_after_cents)}**")
         if payment.note:
             lines.append(f"Note: {payment.note}")
         lines.append(f"Will be emailed to: {tenant.email} (copy to you)")
@@ -126,9 +144,11 @@ class ReceiptService:
         The payment and PDF are saved before emailing, so an email failure
         never loses the record; the receipt can be re-sent later.
         """
+        # Read outside store.add: its callback runs while the store's lock is held.
+        waived = self._store.waived_periods(self._settings.tenant.email)
         payment = self._store.add(
             draft.payment,
-            snapshot_fn=lambda earlier: self._snapshot(draft.payment, earlier),
+            snapshot_fn=lambda saved: self._snapshot(draft.payment, saved, waived),
             created_at=self._clock(),
         )
         logger.info("Recorded payment %s", payment.receipt_id)
@@ -143,18 +163,17 @@ class ReceiptService:
     def recent(self, limit: int = 5) -> list[Payment]:
         return self._store.recent(limit)
 
-    def _snapshot(self, new_payment: NewPayment, earlier: list[Payment]) -> Snapshot:
-        status = period_status(
-            self._settings.tenant,
-            new_payment.period,
-            [*earlier, new_payment],
-            as_of=new_payment.received_on,
-        )
+    def _snapshot(
+        self, new_payment: NewPayment, saved: list[Payment], waived: set[Period]
+    ) -> Snapshot:
+        """The account on the payment's date, just before and after it."""
+        before = account_status(self._settings.tenant, saved, waived, new_payment.received_on)
         return Snapshot(
-            rent_cents=status.rent_cents,
-            late_fee_cents=status.late_fee_cents,
-            paid_before_cents=status.paid_cents - new_payment.amount_cents,
-            balance_after_cents=status.balance_cents,
+            owed_before=tuple(
+                SnapshotItem(i.description, i.remaining_cents) for i in before.open_items
+            ),
+            balance_before_cents=before.balance_cents,
+            balance_after_cents=before.balance_cents - new_payment.amount_cents,
         )
 
     def _render_and_send(self, payment: Payment) -> IssuedReceipt:

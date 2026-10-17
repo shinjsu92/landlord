@@ -16,6 +16,7 @@ from rent_receipt.config import (
     SmtpSettings,
     Tenant,
 )
+from rent_receipt.period import Period
 from rent_receipt.storage import PaymentStore
 
 TZ = ZoneInfo("America/Los_Angeles")
@@ -52,6 +53,7 @@ def make_tenant(**overrides: object) -> Tenant:
         "late_fee_day": 6,
         "late_fee_cents": 5_000,
         "default_payment_method": "Zelle",
+        "billing_start": Period(2026, 10),
     }
     values.update(overrides)
     return Tenant(**values)  # type: ignore[arg-type]

@@ -23,10 +23,22 @@ rent_due_day = 1                 # Rent is due on the 1st.
 late_fee_day = 6                 # The late fee applies from the 6th if rent isn't fully paid.
 late_fee = "50.00"               # Use "0" for no late fee.
 default_payment_method = "Zelle" # Cash, Check, Cashier's check, Money order, Zelle, Venmo, Bank transfer, Other
+billing_start = "2026-10"         # First month the bot charges rent for (YYYY-MM).
 # Optional, kept for future features (e.g. lease renewal reminders):
 # lease_start = 2026-01-01
 # lease_end = 2026-12-31
 # security_deposit = "1000.00"
+
+# Anything already owed before billing_start, oldest first. Payments pay these
+# off first. Delete these sections if nothing was owed. Each one is its own line
+# on receipts and late notices.
+[[tenant.opening_balance]]
+description = "Rent, September 2026"
+amount = "1000.00"
+
+[[tenant.opening_balance]]
+description = "Late fees before October 2026"
+amount = "50.00"
 
 [reminders]
 enabled = true
