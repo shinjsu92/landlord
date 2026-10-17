@@ -21,6 +21,12 @@ for required in "$CONFIG_DIR/config.toml" "$CONFIG_DIR/secrets.env"; do
         exit 1
     fi
 done
+# docker reads --env-file as the deploying user, not as root.
+if [[ ! -r "$CONFIG_DIR/secrets.env" ]]; then
+    echo "$(whoami) can't read $CONFIG_DIR/secrets.env. Fix it with:" >&2
+    echo "  sudo chown $(whoami) $CONFIG_DIR/secrets.env && sudo chmod 600 $CONFIG_DIR/secrets.env" >&2
+    exit 1
+fi
 if [[ ! -d "$DATA_DIR" ]]; then
     echo "Missing $DATA_DIR. Do the one-time server setup in the README first." >&2
     exit 1
