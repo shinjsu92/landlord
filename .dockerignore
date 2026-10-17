@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+**/__pycache__
+.mypy_cache
+.pytest_cache
+.ruff_cache
+tests
+deploy
+*.egg-info
+build
+dist
+config.toml
+secrets.env

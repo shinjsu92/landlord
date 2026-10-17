@@ -1,6 +1,6 @@
-# Copy to /etc/rent-receipt-bot/config.toml and fill in.
+# Copy to /etc/rent-receipt-bot/config.toml on the server and fill in.
 # Secrets do NOT go here. They go in /etc/rent-receipt-bot/secrets.env
-# (see secrets.example.env).
+# (see "Server: one-time setup" in the README).
 
 # Your local time zone, used for "today" and for when reminders go out.
 timezone = "America/Los_Angeles"

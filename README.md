@@ -2,7 +2,7 @@
 
 A private Discord bot for a landlord. You tell it a rent payment came in, and it records it, makes a PDF receipt, and emails it to the tenant. It also reminds you when rent is due, and emails the tenant a late notice if rent isn't paid by the late fee date.
 
-It runs on a server you already have (e.g. an AWS EC2 instance), costs nothing extra, and opens no network ports.
+It runs in Docker on a server you already have (e.g. an AWS EC2 instance), deploys itself on every push to `main`, costs nothing extra, and opens no network ports.
 
 ## How you use it
 
@@ -58,57 +58,66 @@ Receipts are sent from your Gmail account through Gmail's SMTP server.
 1. Turn on 2-Step Verification for the Google account, if it isn't already on.
 2. Go to <https://myaccount.google.com/apppasswords>, create one named "rent bot", and copy the 16-character password.
 
-### 3. Server (Amazon Linux 2023)
+### 3. Server: one-time setup
 
-The bot is kept fully separate from anything else on the server. It has its own system user (`rentbot`), its own folder (`/opt/rent-receipt-bot`), its own Python virtual environment, its own data folder (`/var/lib/rent-receipt-bot`), and its own systemd service. It opens no ports, it's sandboxed so it can't write anywhere else, and it's capped at 256 MB of memory and 25% of one CPU.
+The bot runs as a Docker container named `rent-receipt-bot`, kept fully separate from anything else on the server:
+- It runs as a non-root user inside its own container.
+- It publishes no ports, since it only connects out to Discord and Gmail.
+- Its filesystem is read-only except for its data folder, and it has no extra Linux capabilities.
+- It's limited to 256 MB of memory and a quarter of one CPU.
+- Deploys only ever replace this one container and clean up this app's own old images.
+
+Run these once on the EC2 instance (Docker must already be installed):
 
 ```bash
-# Check the OS version (this guide is for Amazon Linux 2023).
-cat /etc/os-release
-
-# Python 3.11 is installed side by side; the system's default python3 is left alone.
-sudo dnf install -y python3.11 git
-
-# A dedicated user that can't log in.
-sudo useradd --system --home-dir /opt/rent-receipt-bot --shell /sbin/nologin rentbot
-
-# Get the code. For a private repository, use a fine-grained GitHub token with
-# read-only access to this one repository as the password when prompted.
-sudo git clone https://github.com/shinjsu92/landlord.git /opt/rent-receipt-bot
-
-# Install into the bot's own virtual environment.
-sudo python3.11 -m venv /opt/rent-receipt-bot/.venv
-sudo /opt/rent-receipt-bot/.venv/bin/pip install /opt/rent-receipt-bot
-
 # Settings (no secrets in this file).
 sudo mkdir -p /etc/rent-receipt-bot
-sudo cp /opt/rent-receipt-bot/config.example.toml /etc/rent-receipt-bot/config.toml
+# Paste in the contents of config.example.toml from the repository, then fill it in.
 sudo nano /etc/rent-receipt-bot/config.toml
 
-# Secrets: readable by root only. systemd reads this file and passes the
+# Secrets: readable by root only. Docker reads this file and passes the
 # values to the bot.
-sudo cp /opt/rent-receipt-bot/secrets.example.env /etc/rent-receipt-bot/secrets.env
+sudo tee /etc/rent-receipt-bot/secrets.env > /dev/null <<'SECRETS'
+DISCORD_BOT_TOKEN=paste-bot-token-here
+SMTP_PASSWORD=paste-gmail-app-password-here
+SECRETS
 sudo chmod 600 /etc/rent-receipt-bot/secrets.env
 sudo nano /etc/rent-receipt-bot/secrets.env
 
-# Start it now and on every boot.
-sudo cp /opt/rent-receipt-bot/deploy/rent-receipt-bot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now rent-receipt-bot
-
-# Watch the log (Ctrl+C to stop watching). Look for "Logged in as".
-sudo journalctl -u rent-receipt-bot -f
+# Data folder (database and PDFs), owned by the container's user (ID 10001).
+sudo mkdir -p /var/lib/rent-receipt-bot
+sudo chown 10001 /var/lib/rent-receipt-bot
+sudo chmod 700 /var/lib/rent-receipt-bot
 ```
 
-Then try `/balance` in your Discord server. For a first real test, put your own email in `tenant.email`, run `/received amount:1`, and check that the receipt arrives. Restart the bot after changing the config: `sudo systemctl restart rent-receipt-bot`. To remove the test payment afterwards, delete `/var/lib/rent-receipt-bot` before switching to the real tenant email (this erases all data, so only do it before real use).
+The SSH user the deploy logs in as must be able to run `docker` without `sudo` (that is, be in the `docker` group). If your other app already deploys this way, it is.
 
-### Updating
+### 4. GitHub: automatic deploys
+
+Every push to `main` runs the checks (lint, type check, tests), builds the Docker image, pushes it to GitHub's container registry, and deploys it to the EC2 instance over SSH. Pull requests run the checks only. You can follow each run under the repository's **Actions** tab.
+
+Add these in the repository under **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Secret | Value |
+|---|---|
+| `EC2_HOST` | The instance's public IP address or DNS name. |
+| `EC2_USER` | The SSH user, e.g. `ec2-user`. |
+| `EC2_SSH_KEY` | The full private key used to SSH in (the contents of the `.pem` file). |
+| `EC2_KNOWN_HOSTS` | The server's SSH fingerprint, so the deploy can be sure it's talking to your server. Get it by running `ssh-keyscan -H <EC2_HOST>` on your own computer and pasting all of the output. |
+
+The EC2 security group must allow SSH (port 22) from GitHub's servers. If your other app already deploys over SSH from GitHub Actions, it does.
+
+After the secrets are in place, push to `main` (or open **Actions → Test, build and deploy → Run workflow**) and the bot goes live.
+
+### Checking on it
 
 ```bash
-cd /opt/rent-receipt-bot && sudo git pull
-sudo /opt/rent-receipt-bot/.venv/bin/pip install /opt/rent-receipt-bot
-sudo systemctl restart rent-receipt-bot
+docker ps --filter name=rent-receipt-bot     # Is it running?
+docker logs -f rent-receipt-bot              # Live log (Ctrl+C to stop). Look for "Logged in as".
+docker restart rent-receipt-bot              # Restart after editing config.toml or secrets.env.
 ```
+
+For a first real test, put your own email in `tenant.email`, run `/received amount:1` in Discord, and check that the receipt arrives. To clear the test payment before going live, run `docker stop rent-receipt-bot`, delete the files inside `/var/lib/rent-receipt-bot`, switch to the tenant's real email, and run `docker start rent-receipt-bot`. This erases all data, so only do it before real use.
 
 ### Backups
 
@@ -142,6 +151,9 @@ mypy src tests  # type check (strict)
 | `service.py` | Core workflow: preview → record → PDF → email. Knows nothing about Discord. |
 | `reminders.py` | Decides which monthly reminders are due and sends them. |
 | `bot.py` | Discord slash commands, buttons and the reminder loop. |
+| `Dockerfile` | The container image (non-root, Python 3.11). |
+| `.github/workflows/deploy.yml` | Checks on every push and pull request; build and deploy on `main`. |
+| `deploy/deploy.sh` | Runs on the EC2 instance during a deploy to swap in the new container. |
 
 ### Known limitations
 
