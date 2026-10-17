@@ -1,0 +1,45 @@
+# systemd unit for the rent receipt bot.
+# Install: sudo cp deploy/rent-receipt-bot.service /etc/systemd/system/
+#
+# The bot runs as its own "rentbot" user, from its own folder and virtual
+# environment, with its own data folder. It opens no network ports (it only
+# connects out to Discord and Gmail), and the sandboxing below stops it from
+# writing anywhere except /var/lib/rent-receipt-bot, so it can't affect other
+# apps on the server.
+
+[Unit]
+Description=Rent receipt Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rentbot
+Group=rentbot
+WorkingDirectory=/opt/rent-receipt-bot
+EnvironmentFile=/etc/rent-receipt-bot/secrets.env
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/rent-receipt-bot/.venv/bin/python -m rent_receipt --config /etc/rent-receipt-bot/config.toml
+Restart=on-failure
+RestartSec=10
+
+# Creates /var/lib/rent-receipt-bot owned by rentbot (database and PDFs).
+StateDirectory=rent-receipt-bot
+StateDirectoryMode=0750
+
+# Sandboxing and resource limits.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryMax=256M
+CPUQuota=25%
+
+[Install]
+WantedBy=multi-user.target

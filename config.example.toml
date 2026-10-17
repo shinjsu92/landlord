@@ -1,0 +1,43 @@
+# Copy to /etc/rent-receipt-bot/config.toml and fill in.
+# Secrets do NOT go here. They go in /etc/rent-receipt-bot/secrets.env
+# (see secrets.example.env).
+
+# Your local time zone, used for "today" and for when reminders go out.
+timezone = "America/Los_Angeles"
+
+# Where the database and PDF copies of receipts are kept.
+data_dir = "/var/lib/rent-receipt-bot"
+
+[landlord]
+name = "Your Name"
+email = "you@gmail.com"          # Replies from the tenant go here.
+phone = "555-555-5555"           # Optional; printed on receipts.
+
+[tenant]
+name = "Tenant Name"
+email = "tenant@example.com"
+property_address = "123 Main St, Unit 2, City, ST 00000"
+phone = ""                       # Optional.
+monthly_rent = "1000.00"
+rent_due_day = 1                 # Rent is due on the 1st.
+late_fee_day = 6                 # The late fee applies from the 6th if rent isn't fully paid.
+late_fee = "50.00"               # Use "0" for no late fee.
+default_payment_method = "Zelle" # Cash, Check, Cashier's check, Money order, Zelle, Venmo, Bank transfer, Other
+# Optional, kept for future features (e.g. lease renewal reminders):
+# lease_start = 2026-01-01
+# lease_end = 2026-12-31
+# security_deposit = "1000.00"
+
+[reminders]
+enabled = true
+send_time = "09:00"              # Local time reminders go out.
+email_tenant_late_notice = true  # Email the tenant on the late fee day if a balance remains.
+
+[discord]
+owner_user_id = 0                # Your Discord user ID (see README).
+guild_id = 0                     # Your private server's ID (see README).
+
+[smtp]
+host = "smtp.gmail.com"
+port = 587
+username = "you@gmail.com"       # Receipts are sent from this address.
