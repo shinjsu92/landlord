@@ -52,3 +52,16 @@ def test_unknown_payment_method(tmp_path: Path) -> None:
 def test_missing_file(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="not found"):
         load_settings(tmp_path / "nope.toml", env=SECRETS)
+
+
+def test_gmail_app_password_spaces_are_removed(tmp_path: Path) -> None:
+    env = {**SECRETS, "SMTP_PASSWORD": " abcd efgh ijkl mnop\n"}
+    settings = load_settings(write_config(tmp_path, filled_example()), env=env)
+    assert settings.smtp.password == "abcdefghijklmnop"
+
+
+def test_other_smtp_password_keeps_inner_spaces(tmp_path: Path) -> None:
+    text = filled_example().replace('host = "smtp.gmail.com"', 'host = "mail.example.com"')
+    env = {**SECRETS, "SMTP_PASSWORD": "pass word\n"}
+    settings = load_settings(write_config(tmp_path, text), env=env)
+    assert settings.smtp.password == "pass word"

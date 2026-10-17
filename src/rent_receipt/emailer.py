@@ -17,6 +17,10 @@ from rent_receipt.storage import Payment
 _SMTP_TIMEOUT_SECONDS = 30
 
 
+class EmailLoginError(Exception):
+    """The SMTP server refused the username or password."""
+
+
 class EmailSender(Protocol):
     """Anything that can deliver an email. Tests use a fake one."""
 
@@ -35,7 +39,15 @@ class SmtpEmailSender:
             self._settings.host, self._settings.port, timeout=_SMTP_TIMEOUT_SECONDS
         ) as smtp:
             smtp.starttls(context=context)
-            smtp.login(self._settings.username, self._settings.password)
+            try:
+                smtp.login(self._settings.username, self._settings.password)
+            # Gmail sometimes just hangs up on a bad password instead of answering.
+            except (smtplib.SMTPAuthenticationError, smtplib.SMTPServerDisconnected) as exc:
+                raise EmailLoginError(
+                    f"{self._settings.host} refused the login for {self._settings.username} "
+                    f"({exc}). Check SMTP_PASSWORD in secrets.env: for Gmail it must be "
+                    "the 16-letter app password, not your normal password."
+                ) from exc
             smtp.send_message(message)
 
 

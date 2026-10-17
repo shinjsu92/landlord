@@ -56,7 +56,7 @@ You'll do three things: create the Discord bot, create a Gmail app password, and
 Receipts are sent from your Gmail account through Gmail's SMTP server.
 
 1. Turn on 2-Step Verification for the Google account, if it isn't already on.
-2. Go to <https://myaccount.google.com/apppasswords>, create one named "rent bot", and copy the 16-character password.
+2. Go to <https://myaccount.google.com/apppasswords>, create one named "rent bot", and copy the 16-letter password. Google shows it in groups of four; the bot ignores those spaces.
 
 ### 3. Server: one-time setup
 
