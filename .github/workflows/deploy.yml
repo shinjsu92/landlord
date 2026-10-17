@@ -1,0 +1,103 @@
+# Every push to main: run the checks, build the Docker image, push it to the
+# GitHub Container Registry, and deploy it to the EC2 instance over SSH.
+# Pull requests only run the checks.
+name: Test, build and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Never run two deploys at once; a newer push waits for the current one.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}/rent-receipt-bot
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy src tests
+      - run: pytest
+
+  build:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: image
+        # Registry names must be lowercase.
+        run: echo "name=${IMAGE_NAME,,}:sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      # Builds for both Intel/AMD and ARM (Graviton) instances.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.image.outputs.name }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2_key
+          chmod 600 ~/.ssh/ec2_key
+          printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Deploy to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # The variables are sent at the top of the script over SSH (not as
+        # command-line arguments), so the token never shows in a process list.
+        run: |
+          {
+            printf 'IMAGE=%q\n' "$IMAGE"
+            printf 'IMAGE_REPOSITORY=%q\n' "$GITHUB_REPOSITORY"
+            printf 'GHCR_USER=%q\n' "$GITHUB_ACTOR"
+            printf 'GHCR_TOKEN=%q\n' "$GHCR_TOKEN"
+            cat deploy/deploy.sh
+          } | ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=yes "$EC2_USER@$EC2_HOST" 'bash -s'
