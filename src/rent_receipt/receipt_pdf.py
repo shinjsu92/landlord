@@ -36,8 +36,14 @@ _AMBER: Color = (176, 106, 0)
 _BLUE: Color = (13, 110, 253)
 
 
-def render_receipt(payment: Payment, landlord: Landlord, tenant: Tenant) -> bytes:
-    """Return the PDF bytes for ``payment``."""
+def render_receipt(
+    payment: Payment, landlord: Landlord, tenant: Tenant, *, preview: bool = False
+) -> bytes:
+    """Return the PDF bytes for ``payment``.
+
+    ``preview`` marks it as a draft the landlord hasn't sent yet, in place of
+    the receipt number, which doesn't exist until the payment is saved.
+    """
     pdf = FPDF(format="Letter")
     pdf.set_title(f"Rent receipt {payment.receipt_id}")
     pdf.set_author(landlord.name)
@@ -45,19 +51,19 @@ def render_receipt(payment: Payment, landlord: Landlord, tenant: Tenant) -> byte
     pdf.set_auto_page_break(auto=True, margin=_MARGIN)
     pdf.add_page()
 
-    _header(pdf, landlord)
-    _key_facts(pdf, payment)
+    _header(pdf, landlord, "PREVIEW - NOT SENT YET" if preview else "Proof of payment")
+    _key_facts(pdf, "PREVIEW" if preview else payment.receipt_id, payment)
     _parties(pdf, landlord, tenant)
     _line_items(pdf, payment)
     _amount_paid(pdf, payment)
     if payment.note:
         _note(pdf, payment.note)
-    _footer(pdf, payment)
+    _footer(pdf, None if preview else payment)
 
     return bytes(pdf.output())
 
 
-def _header(pdf: FPDF, landlord: Landlord) -> None:
+def _header(pdf: FPDF, landlord: Landlord, subtitle: str) -> None:
     pdf.set_fill_color(*_NAVY)
     pdf.rect(0, 0, pdf.w, _HEADER_HEIGHT, style="F")
 
@@ -67,7 +73,7 @@ def _header(pdf: FPDF, landlord: Landlord) -> None:
     pdf.cell(100, 10, "RENT RECEIPT")
     pdf.set_xy(_MARGIN, 21)
     pdf.set_font(_FONT, size=9)
-    pdf.cell(100, 5, "Proof of payment")
+    pdf.cell(100, 5, subtitle)
 
     contact = [landlord.email] + ([landlord.phone] if landlord.phone else [])
     right_x = pdf.w - _MARGIN - 90
@@ -83,9 +89,9 @@ def _header(pdf: FPDF, landlord: Landlord) -> None:
     pdf.set_y(_HEADER_HEIGHT + 10)
 
 
-def _key_facts(pdf: FPDF, payment: Payment) -> None:
+def _key_facts(pdf: FPDF, receipt_label: str, payment: Payment) -> None:
     facts = [
-        ("RECEIPT NO.", payment.receipt_id),
+        ("RECEIPT NO.", receipt_label),
         ("DATE RECEIVED", payment.received_on.strftime("%B %d, %Y").replace(" 0", " ")),
         ("PAYMENT METHOD", payment.method),
     ]
@@ -222,7 +228,8 @@ def _note(pdf: FPDF, note: str) -> None:
     pdf.ln(6)
 
 
-def _footer(pdf: FPDF, payment: Payment) -> None:
+def _footer(pdf: FPDF, payment: Payment | None) -> None:
+    """Thank-you line, then where to keep the receipt (or that it's only a preview)."""
     pdf.set_y(-_MARGIN - 16)
     pdf.set_draw_color(*_RULE)
     pdf.line(_MARGIN, pdf.get_y(), pdf.w - _MARGIN, pdf.get_y())
@@ -233,13 +240,15 @@ def _footer(pdf: FPDF, payment: Payment) -> None:
     pdf.ln(5)
     pdf.set_font(_FONT, size=8)
     pdf.set_text_color(*_MUTED)
-    pdf.cell(
-        0,
-        5,
-        f"Please keep this receipt for your records. Receipt {payment.receipt_id} "
-        f"was issued on {payment.created_at.strftime('%B %d, %Y').replace(' 0', ' ')}.",
-        align=Align.C,
-    )
+    if payment is None:
+        text = "This is a preview. Nothing has been saved or sent."
+    else:
+        issued_on = payment.created_at.strftime("%B %d, %Y").replace(" 0", " ")
+        text = (
+            f"Please keep this receipt for your records. Receipt {payment.receipt_id} "
+            f"was issued on {issued_on}."
+        )
+    pdf.cell(0, 5, text, align=Align.C)
 
 
 def _label(pdf: FPDF, text: str, width: float) -> None:
