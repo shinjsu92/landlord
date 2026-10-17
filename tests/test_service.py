@@ -51,7 +51,7 @@ def test_issue_records_saves_pdf_and_emails(service: ReceiptService, sender: Fak
 def test_receipt_pdf_shows_key_details(service: ReceiptService, tmp_path: Path) -> None:
     issued = service.issue(service.prepare(60_000))
     text = PdfReader(issued.pdf_path).pages[0].extract_text()
-    for expected in ["R-000001", "Jane Kim", "October 2026", "$600.00", "$400.00 remaining"]:
+    for expected in ["R-000001", "Jane Kim", "October 2026", "$600.00", "BALANCE DUE $400.00"]:
         assert expected in text
 
 
